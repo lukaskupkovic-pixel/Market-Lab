@@ -1,0 +1,40 @@
+name: Market refresh
+on:
+  schedule:
+    - cron: '26 6 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: market-refresh
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: '2'
+      OPENBLAS_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - id: compute
+        continue-on-error: true
+        run: python refresh.py
+      - if: hashFiles('public/data.json') != ''
+        run: |
+          git config user.name 'Market Signal Lab'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/data.json
+          git diff --cached --quiet || git commit -m 'Refresh market snapshot'
+          git push
+      - if: hashFiles('public/data.json') != ''
+        env:
+          DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then echo "::warning::VERCEL_DEPLOY_HOOK is missing"; exit 1; fi
+          curl --fail-with-body --silent --show-error --output /dev/null -X POST "$DEPLOY_HOOK"
+      - if: steps.compute.outcome == 'failure'
+        run: exit 1
