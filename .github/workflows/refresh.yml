@@ -1,5 +1,8 @@
 name: Market refresh
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/refresh.yml']
   schedule:
     - cron: '26 6 * * *'
   workflow_dispatch:
@@ -16,6 +19,8 @@ jobs:
       OPENBLAS_NUM_THREADS: '2'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
