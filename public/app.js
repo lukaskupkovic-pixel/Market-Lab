@@ -27,8 +27,9 @@ function assess(m) {
   if (m?.up == null) return {label:"Nedostatek dat", reason:"Odhad není k dispozici."};
   if (m.stale) return {label:"Starší data", reason:"Poslední aktualizace trhu selhala."};
   const b = m.metrics;
-  if (b.test_count < 50) return {label:"Slabý signál", reason:"V testu je méně než 50 nepřekrývajících se výhledů."};
-  if (b.weak) return {label:"Slabý signál", reason:`Brier modelu ${fmt(b.brier)} vůči ${fmt(Math.min(.25,b.baseline_brier))} u lepšího jednoduchého odhadu. Test nedosáhl požadovaného zlepšení 0,005.`};
+  if (!b || typeof b.weak !== "boolean") return {label:"Nedostatek dat", reason:"Historické ověření chybí."};
+  if (b.test_count < 50) return {label:"Bez signálu", reason:"V testu je méně než 50 nepřekrývajících se výhledů."};
+  if (b.weak) return {label:"Bez signálu", reason:`Slabý backtest. Brier modelu ${fmt(b.brier)} vůči ${fmt(Math.min(.25,b.baseline_brier))} u lepšího jednoduchého odhadu. Test nedosáhl požadovaného zlepšení 0,005.`};
   return {label:"Sledovat", reason:"Model splnil nastavený práh historického ověření."};
 }
 function scout(m) {
@@ -41,7 +42,7 @@ const tabs = document.createElement("div");
 tabs.className = "view-tabs";
 tabs.setAttribute("role", "group");
 tabs.setAttribute("aria-label", "Zobrazení detailu");
-const views = {signals:"Signály", stats:"Statistiky"};
+const views = {signals:"Signály", stats:"Statistiky", report:"Reportér"};
 for (const [id,label] of Object.entries(views)) {
   const button = document.createElement("button");
   button.textContent = label;
@@ -51,6 +52,34 @@ for (const [id,label] of Object.entries(views)) {
 }
 detail.before(tabs);
 
+
+function reporter(symbol) {
+  const records = Object.values(snapshot.forecasts ?? {}).filter(f => f.symbol === symbol)
+    .sort((a,b) => (b.created ?? b.date).localeCompare(a.created ?? a.date));
+  const settled = records.filter(f => f.outcome === "up" || f.outcome === "flat_or_down");
+  const buckets = new Map();
+  for (const f of settled) {
+    const low = Math.min(95, 5 * Math.floor(f.up * 20));
+    const bucket = buckets.get(low) ?? {total:0, up:0};
+    bucket.total++;
+    if (f.outcome === "up") bucket.up++;
+    buckets.set(low, bucket);
+  }
+  const rows = [...buckets].sort(([a],[b]) => a-b).map(([low,b]) =>
+    `<dt>${low}–${low+5} %</dt><dd>${b.up} z ${b.total} rostlo · ${pct(b.up/b.total)}</dd>`).join("");
+  const history = records.slice(0,20).map(f => {
+    const result = f.outcome === "up" ? "Růst" : f.outcome === "flat_or_down" ? "Pokles / beze změny" : "Čeká na závěr";
+    const published = f.created ? dateTime.format(new Date(f.created)) : f.date;
+    return `<dt>${published}<br><small>Cíl ${f.target}</small></dt><dd>${pct(f.up)} růst<br><small>${result}${f.outcome_date ? " · "+f.outcome_date : ""}</small></dd>`;
+  }).join("");
+  return `<article class="panel"><h2>Reportér · ${markets[symbol]}</h2>
+  <p>${records.length} zveřejněných · ${settled.length} vyhodnocených · ${records.length-settled.length} čeká</p>
+  <h3>Růst podle pásma odhadu</h3>
+  ${rows ? `<dl class="agent-notes">${rows}</dl><p>Počty zahrnují i překrývající se výhledy.</p>` : "<p>Zatím žádný dokončený výhled.</p>"}
+  <h3>Poslední zveřejněné odhady</h3>
+  ${history ? `<dl class="agent-notes">${history}</dl>` : "<p>Historie zatím není dostupná.</p>"}</article>`;
+}
+
 function render() {
   for (const button of tabs.children) button.setAttribute('aria-pressed', button.dataset.view === view);
   nav.replaceChildren();
@@ -59,12 +88,16 @@ function render() {
     const button = document.createElement("button");
     button.setAttribute("aria-pressed", symbol === current);
     const verdict = assess(m);
-    button.innerHTML = `<small>${name}</small><strong class="${verdict.label === "Sledovat" ? (m.up >= .5 ? "up" : "down") : ""}">${pct(m?.up)}</strong><small>${m?.up == null ? verdict.label : `Růst · 7 dní · ${verdict.label}`}</small>`;
+    button.innerHTML = `<small>${name}</small><strong class="${verdict.label === "Sledovat" ? (m.up >= .5 ? "up" : "down") : ""}">${verdict.label === "Sledovat" ? pct(m.up) : verdict.label}</strong><small>${verdict.label === "Sledovat" ? "Odhad růstu · 7 dní" : verdict.reason.split(". ")[0]}</small>`;
     button.onclick = () => {current = symbol; render();};
     nav.append(button);
   }
   const m = snapshot.markets?.[current];
-  if (m?.up == null) {
+  if (view === "report") {
+    detail.innerHTML = reporter(current);
+    return;
+  }
+  if (m?.up == null || !m.metrics) {
     detail.innerHTML = `<div class="panel"><h2>${markets[current]}</h2><p>Pro tento trh zatím není dostupná ověřená datová sada a modelový odhad.</p></div>`;
     return;
   }
@@ -77,7 +110,7 @@ function render() {
   ${chart(m.prices)}
   <p>${m.prices[0][0]} až ${m.prices.at(-1)[0]} · denní závěry</p></article>
   <article class="panel"><h2>Sedmidenní výhled</h2><p class="${verdict.label === "Sledovat" ? "" : "warn"}">${verdict.label}</p>
-  <div class="signals"><div class="up"><strong>${pct(m.up)}</strong>Růst</div><div class="down"><strong>${pct(1-m.up)}</strong>Pokles nebo stejná cena</div></div>
+  <div class="signals"><div class="${verdict.label === "Sledovat" ? "up" : ""}"><strong>${pct(m.up)}</strong>Růst</div><div class="${verdict.label === "Sledovat" ? "down" : ""}"><strong>${pct(1-m.up)}</strong>Pokles nebo stejná cena</div></div>
   <p>Modelový odhad od závěru ${m.date}. Cíl připadá na ${m.target}, při zavřeném trhu se vyhodnotí první následující závěr.</p>
   <meter class="signal-meter" min="0" max="1" value="${m.up}" aria-label="Pravděpodobnost růstu"></meter>
   <dl class="agent-notes"><dt>Scout</dt><dd>${scout(m)}</dd><dt>Model</dt><dd>Kalibrovaný odhad růstu ${pct(m.up)}.</dd><dt>Skeptik</dt><dd>${verdict.reason}</dd></dl>
@@ -88,7 +121,7 @@ function render() {
   <dl><dt>Accuracy</dt><dd>${pct(b.accuracy)}</dd><dt>Brier score</dt><dd>${fmt(b.brier)}</dd><dt>Log loss</dt><dd>${fmt(b.log_loss)}</dd><dt>Brier historické četnosti</dt><dd>${fmt(b.baseline_brier)}</dd><dt>Brier odhadu 50 %</dt><dd>0,25</dd></dl>
   ${chart(m.reliability.map(b=>[b.predicted,b.observed]),true)}
   <p>Kalibrace · osa x odhad, osa y pozorovaná četnost. Obě osy 0–100 %.</p>
-  <details><summary>Uložené predikce</summary><dl>${Object.values(snapshot.forecasts).filter(f=>f.symbol===current).slice(-20).reverse().map(f=>`<dt>${f.date} · ${pct(f.up)}</dt><dd>${f.outcome === "up" ? "Růst" : f.outcome === "flat_or_down" ? "Pokles / beze změny" : "Čeká na závěr"}</dd>`).join("")}</dl></details></article>`;
+  </article>`;
   for (const panel of detail.children) panel.hidden = view === "stats" ? !panel.hasAttribute("data-statistics") : panel.hasAttribute("data-statistics");
 }
 async function load() {
