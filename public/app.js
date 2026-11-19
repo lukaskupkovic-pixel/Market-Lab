@@ -26,11 +26,12 @@ let view = "signals";
 function assess(m) {
   if (m?.up == null) return {label:"Nedostatek dat", reason:"Odhad není k dispozici."};
   if (m.stale) return {label:"Starší data", reason:"Poslední aktualizace trhu selhala."};
+  if (m.quality?.missing_context?.length) return {label:"Bez signálu", reason:"Chybí některé z požadovaných kontextových řad: " + m.quality.missing_context.join(", ") + "."};
   const b = m.metrics;
   if (!b || typeof b.weak !== "boolean") return {label:"Nedostatek dat", reason:"Historické ověření chybí."};
   if (b.test_count < 50) return {label:"Bez signálu", reason:"V testu je méně než 50 nepřekrývajících se výhledů."};
-  if (b.weak) return {label:"Bez signálu", reason:`Slabý backtest. Brier modelu ${fmt(b.brier)} vůči ${fmt(Math.min(.25,b.baseline_brier))} u lepšího jednoduchého odhadu. Test nedosáhl požadovaného zlepšení 0,005.`};
-  return {label:"Sledovat", reason:"Model splnil nastavený práh historického ověření."};
+  if (b.weak) return {label:"Bez signálu", reason:`Zatím neprokázaná výhoda. Brier ${fmt(b.brier)} proti ${fmt(b.best_baseline_brier ?? Math.min(.25,b.baseline_brier))}. Požadujeme zlepšení alespoň 0,005 a kladnou dolní mez 95% bootstrap intervalu.`};
+  return {label:"Sledovat", reason:"Model překonal jednoduché reference na oddělených testovacích datech, včetně intervalu nejistoty. Minulé výsledky nezaručují budoucí."};
 }
 function scout(m) {
   const momentum = m.indicators?.ret5;
@@ -113,12 +114,16 @@ function render() {
   <div class="signals"><div class="${verdict.label === "Sledovat" ? "up" : ""}"><strong>${pct(m.up)}</strong>Růst</div><div class="${verdict.label === "Sledovat" ? "down" : ""}"><strong>${pct(1-m.up)}</strong>Pokles nebo stejná cena</div></div>
   <p>Modelový odhad od závěru ${m.date}. Cíl připadá na ${m.target}, při zavřeném trhu se vyhodnotí první následující závěr.</p>
   <meter class="signal-meter" min="0" max="1" value="${m.up}" aria-label="Pravděpodobnost růstu"></meter>
-  <dl class="agent-notes"><dt>Scout</dt><dd>${scout(m)}</dd><dt>Model</dt><dd>Kalibrovaný odhad růstu ${pct(m.up)}.</dd><dt>Skeptik</dt><dd>${verdict.reason}</dd></dl>
-  <details><summary>Vstupy modelu</summary><p>Odhad vychází z trendu, momenta, volatility a cenového rozpětí. Kontextové řady mají časový posun.</p><p>Kontext: ${m.context.join(", ") || "nedostupný"}</p>
+  <dl class="agent-notes"><dt>Scout</dt><dd>${scout(m)}</dd><dt>Režim</dt><dd>${m.regime || "Neurčený"} (pravidlová diagnostika, ne další model)</dd><dt>Model</dt><dd>Kalibrovaný odhad růstu ${pct(m.up)}. Varianta: ${b.selected_model || "původní"}.</dd><dt>Skeptik</dt><dd>${verdict.reason}</dd></dl>
+  <details><summary>Vstupy a kvalita dat</summary><p>Odhad vychází z trendu, momenta, volatility a cenového rozpětí. Kontextové řady mají časový posun.</p><p>Kontext: ${(m.context || []).join(", ") || "nedostupný"}</p>
+  <p>Zdroj: ${m.quality?.source || "Yahoo Finance Chart"} · stáří poslední uzavřené seance ${m.quality?.age_days ?? "—"} dní · ${m.quality?.bars ?? "—"} svíček.</p>
+  ${m.quality?.warnings?.length ? `<p class="warn">${m.quality.warnings.join(" · ")}</p>` : ""}
+  ${m.quality?.missing_context?.length ? `<p class="warn">Chybějící kontext: ${m.quality.missing_context.join(", ")}</p>` : ""}
   <dl>${Object.entries(labels).map(([k,v])=>`<dt>${v}</dt><dd>${k==="rsi14" ? fmt(m.indicators[k]) : pct(m.indicators[k])}</dd>`).join("")}</dl></details></article>
   <article class="panel" data-statistics><h2>Historické ověření</h2>
-  <p>${b.test_start} až ${b.test_end} · ${b.test_count} nepřekrývajících se výhledů</p>
-  <dl><dt>Accuracy</dt><dd>${pct(b.accuracy)}</dd><dt>Brier score</dt><dd>${fmt(b.brier)}</dd><dt>Log loss</dt><dd>${fmt(b.log_loss)}</dd><dt>Brier historické četnosti</dt><dd>${fmt(b.baseline_brier)}</dd><dt>Brier odhadu 50 %</dt><dd>0,25</dd></dl>
+  <p>${b.test_start} až ${b.test_end} · ${b.test_count} nepřekrývajících se výhledů · výběr modelu proběhl na starších validačních datech</p>
+  <dl><dt>Vybraný model</dt><dd>${b.selected_model ?? "původní"}</dd><dt>Accuracy</dt><dd>${pct(b.accuracy)}</dd><dt>Brier score</dt><dd>${fmt(b.brier)}</dd><dt>Log loss</dt><dd>${fmt(b.log_loss)}</dd><dt>Brier historické četnosti</dt><dd>${fmt(b.baseline_brier)}</dd><dt>Brier odhadu 50 %</dt><dd>${fmt(b.fair_coin_brier ?? .25)}</dd><dt>Brier momentum reference</dt><dd>${fmt(b.momentum_brier)}</dd><dt>Zlepšení proti nejlepší referenci</dt><dd>${fmt(b.improvement)}</dd><dt>95% bootstrap interval zlepšení</dt><dd>${b.improvement_ci ? b.improvement_ci.map(fmt).join(" až ") : "—"}</dd></dl>
+  <p>Samostatné modely na závěrečném testu: ${b.test_candidates_brier ? Object.entries(b.test_candidates_brier).map(([k,v])=>k+": "+fmt(v)).join(" · ") : "nejsou k dispozici"}. Nejde o výsledky reálných obchodů.</p>
   ${chart(m.reliability.map(b=>[b.predicted,b.observed]),true)}
   <p>Kalibrace · osa x odhad, osa y pozorovaná četnost. Obě osy 0–100 %.</p>
   </article>`;

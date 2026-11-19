@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from engine import ASSETS, analyze, fetch
+from engine import ASSETS, CONTEXT_BY_SYMBOL, analyze, fetch
 
 logging.basicConfig(level=logging.INFO)
 OUTPUT = Path("public/data.json")
-VERSION = "daily-hgb-v2"
+VERSION = "daily-ensemble-v3"
 
 
 def refresh():
@@ -21,7 +21,7 @@ def refresh():
     results = {}
     series = {}
     errors = {}
-    symbols = [*ASSETS.values(), "DX-Y.NYB", "^TNX"]
+    symbols = list(dict.fromkeys([*ASSETS.values(), "DX-Y.NYB", "^TNX"]))
     with ThreadPoolExecutor(max_workers=4) as pool:
         requests = {symbol: pool.submit(fetch, symbol) for symbol in symbols}
         for symbol, request in requests.items():
@@ -33,8 +33,10 @@ def refresh():
     for name, symbol in ASSETS.items():
         try:
             df = series[symbol]
-            context = {key: series[key]["Close"] for key in ("DX-Y.NYB", "^TNX", "^GSPC", "BTC-USD")
-                       if key != symbol and key in series}
+            expected = CONTEXT_BY_SYMBOL.get(symbol, {})
+            context = {name: series[src]["Close"] for name, src in expected.items()
+                       if src != symbol and src in series}
+            missing_context = [name for name, src in expected.items() if src not in series]
             model = analyze(df, context)
             date = model["last_date"]
             close = model["last_close"]
@@ -61,6 +63,9 @@ def refresh():
                 "target": history[key]["target"], "metrics": model["metrics"],
                 "reliability": model["reliability"].to_dict("records"),
                 "indicators": model["indicators"].astype(object).where(model["indicators"].notna(), None).to_dict(),
+                "regime": model["regime"],
+                "quality": {**df.attrs.get("quality", {}), "missing_context": missing_context},
+                "model_version": VERSION,
                 "context": list(context),
                 "prices": [[str(d.date()), float(c)] for d, c in df.Close.tail(120).items()],
             }
