@@ -64,6 +64,7 @@ def refresh():
                 "reliability": model["reliability"].to_dict("records"),
                 "indicators": model["indicators"].astype(object).where(model["indicators"].notna(), None).to_dict(),
                 "regime": model["regime"],
+                "reference_range": model["reference_range"],
                 "quality": {**df.attrs.get("quality", {}), "missing_context": missing_context},
                 "model_version": VERSION,
                 "context": list(context),

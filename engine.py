@@ -194,6 +194,34 @@ def market_regime(indicators):
     return direction
 
 
+def empirical_seven_day_range(df):
+    """Historical 10th–90th percentile of independent 7-calendar-day returns.
+
+    Descriptive only: this is NOT a conditional or calibrated future price band.
+    The latest three years are used so old volatility regimes do not dominate.
+    """
+    _, ends = labels(df)
+    last_date = df.index[-1]
+    window_start = last_date - pd.Timedelta(days=365 * 3)
+    candidate_dates = df.index[df.index >= window_start]
+    independent = independent_indices(candidate_dates, ends, 0, len(candidate_dates), known_before=last_date)
+    returns = []
+    for i in independent:
+        beginning = candidate_dates[i]
+        ending = ends.at[beginning]
+        opening = float(df.at[beginning, "Close"])
+        if opening != 0:
+            returns.append((float(df.at[ending, "Close"]) - opening) / abs(opening))
+    if len(returns) < 40 or not np.isfinite(returns).all():
+        return None
+    low, high = np.quantile(returns, [.10, .90])
+    current = float(df.at[last_date, "Close"])
+    if current <= 0:
+        return None
+    return {"low": float(current * (1 + low)), "high": float(current * (1 + high)),
+            "count": len(returns), "percentile": 80, "kind": "historical_not_forecast"}
+
+
 def analyze(df, context=None):
     X = features(df)
     for name, series in (context or {}).items():
@@ -325,4 +353,5 @@ def analyze(df, context=None):
         "last_close": float(df.loc[last_date, "Close"]),
         "history": df, "indicators": indicator,
         "regime": market_regime(indicator),
+        "reference_range": empirical_seven_day_range(df),
     }

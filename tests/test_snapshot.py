@@ -16,6 +16,7 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(market["model_version"], "daily-ensemble-v3")
             self.assertEqual(len(market["metrics"]["improvement_ci"]), 2)
             self.assertIn("quality", market)
+            self.assertEqual(market["reference_range"]["kind"], "historical_not_forecast")
 
 
 if __name__ == "__main__":

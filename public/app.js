@@ -10,6 +10,16 @@ const number = new Intl.NumberFormat("cs-CZ", {maximumFractionDigits: 3});
 const dateTime = new Intl.DateTimeFormat("cs-CZ", {dateStyle:"medium",timeStyle:"short",timeZone:"Europe/Prague"});
 const pct = p => Number.isFinite(p) ? number.format(p * 100) + " %" : "—";
 const fmt = p => Number.isFinite(p) ? number.format(p) : "—";
+const price = p => Number.isFinite(p) ? new Intl.NumberFormat("cs-CZ", {minimumFractionDigits:2, maximumFractionDigits:2}).format(p) : "—";
+const marketHeadlines = {
+  "BTC-USD":["BTC/USD · Bitcoin","Spotový trh · USD"],
+  "ETH-USD":["ETH/USD · Ethereum","Spotový trh · USD"],
+  "GC=F":["XAU/USD · Gold","GC=F futures proxy · není spot XAU/USD"],
+  "SI=F":["XAG/USD · Silver","SI=F futures proxy · není spot XAG/USD"],
+  "CL=F":["WTI · Crude oil","Kontinuální futures · USD"],
+  "^NDX":["Nasdaq 100","Akciový index · body"],
+  "^GSPC":["S&P 500","Akciový index · body"],
+};
 const chart = (points, reliability = false) => {
   if (!points.length) return "";
   const ys = points.map(p => p[1]);
@@ -39,6 +49,86 @@ function scout(m) {
   const average = m.indicators?.ma10;
   if (!Number.isFinite(momentum) || !Number.isFinite(average)) return "Krátkodobé indikátory chybí.";
   return `Momentum za 5 seancí ${pct(momentum)}. Cena je ${pct(Math.abs(average))} ${average >= 0 ? "nad" : "pod"} desetidenním průměrem.`;
+}
+function directionSummary(probability) {
+  if (!Number.isFinite(probability)) return "Není k dispozici";
+  if (probability >= .65) return "Převaha růstu";
+  if (probability >= .5) return "Mírná převaha růstu";
+  if (probability > .35) return "Mírná převaha poklesu";
+  return "Převaha poklesu";
+}
+function explainForecast(m, verdict) {
+  const momentum = m.indicators?.ret5;
+  const volRatio = m.indicators?.vol_ratio;
+  const sentences = [];
+  if (Number.isFinite(momentum)) {
+    sentences.push(`Pětidenní momentum je ${pct(momentum)} (${momentum >= 0 ? "kladné" : "záporné"}).`);
+  }
+  if (Number.isFinite(volRatio)) {
+    sentences.push(volRatio > 1.3
+      ? "Krátkodobá volatilita je výrazně vyšší než třicetidenní průměr."
+      : "Krátkodobá volatilita není výrazně zvýšená vůči třicetidennímu období.");
+  }
+  sentences.push(`Tržní režim: ${m.regime || "neurčený"}.`);
+  if (verdict.label !== "Sledovat") {
+    sentences.push("Historický test zatím neprokázal dostatečnou predikční výhodu.");
+  }
+  return sentences.join(" ");
+}
+function scenarioMarkup(symbol, m, verdict) {
+  const [headline, subtitle] = marketHeadlines[symbol];
+  const positive = Math.max(0, Math.min(100, 100 * m.up));
+  const negative = 100 - positive;
+  const good = verdict.label === "Sledovat";
+  const range = m.reference_range;
+  const rangeAvailable = Number.isFinite(range?.low) && Number.isFinite(range?.high);
+  const rangeUnit = symbol.startsWith("^") ? "bodů" : "USD";
+  const rangeValue = rangeAvailable ? `${price(range.low)}–${price(range.high)} ${rangeUnit}` : "Zatím nedostupné";
+  return `<article class="panel forecast-panel" aria-label="Sedmidenní pravděpodobnostní scénáře">
+    <div class="forecast-heading">
+      <div class="forecast-title">
+        <span class="forecast-icon" aria-hidden="true">⌁</span>
+        <div><h2>${headline}</h2><p>${subtitle} · výhled 7 dní</p></div>
+      </div>
+      <span class="forecast-badge ${good ? "badge-good" : "badge-warn"}">${good ? "Historicky ověřeno" : "Zatím neověřeno"}</span>
+    </div>
+    <div class="scenario-grid">
+      <div class="scenario-card scenario-up"><span>Růst</span><strong>${pct(m.up)}</strong></div>
+      <div class="scenario-card scenario-neutral"><span>Neutrální</span><strong>—</strong><small>Nemodelováno</small></div>
+      <div class="scenario-card scenario-down"><span>Pokles*</span><strong>${pct(1-m.up)}</strong></div>
+    </div>
+    <p class="scenario-note">* Pokles zahrnuje i stejnou cenu. Současný model rozlišuje dvě třídy; samostatnou pravděpodobnost neutrálního scénáře zatím nepočítá.</p>
+    <div class="probability-title"><span>Pravděpodobnostní výhled</span><strong>7 dní</strong></div>
+    <div class="probability-bar" role="img" aria-label="Pravděpodobnost růstu ${pct(m.up)}, poklesu nebo stejné ceny ${pct(1-m.up)}">
+      <div class="bar-up" style="width:${positive}%"></div>
+      <div class="bar-down" style="width:${negative}%"></div>
+    </div>
+    <div class="forecast-facts">
+      <div><span>Nejpravděpodobnější směr</span><strong>${directionSummary(m.up)}</strong></div>
+      <div><span>Tržní režim</span><strong>${m.regime || "Neurčený"}</strong></div>
+      <div><span>Historické 80% pásmo · 7 dní</span><strong>${rangeValue}</strong><small>Orientační historické rozpětí, není to predikční interval${range?.count ? " · " + range.count + " výhledů" : ""}</small></div>
+      <div><span>Kvalita modelu</span><strong class="${good ? "quality-good" : "quality-warning"}">${verdict.label}</strong></div>
+    </div>
+    <div class="explanation-box">
+      <h3><span aria-hidden="true">✧</span> Vysvětlení předpovědi</h3>
+      <p>${explainForecast(m, verdict)}</p>
+      <p class="explanation-disclaimer">Jde o popis tržních ukazatelů, nikoli o prokázanou příčinu rozhodnutí statistického modelu.</p>
+    </div>
+    <p class="forecast-footnote">Odhad od uzavření ${m.date} · cíl ${m.target} (první následující závěr při uzavřeném trhu). Pravděpodobnost není obchodní doporučení.</p>
+    <details class="source-details"><summary>Model, vstupy a kvalita dat</summary>
+      <dl class="agent-notes"><dt>Scout</dt><dd>${scout(m)}</dd><dt>Model</dt><dd>Varianta ${m.metrics.selected_model || "původní"} · odhad růstu ${pct(m.up)}</dd><dt>Skeptik</dt><dd>${verdict.reason}</dd></dl>
+      <p>Zdroj: ${m.quality?.source || "Yahoo Finance Chart"} · stáří seance ${m.quality?.age_days ?? "—"} dní · ${m.quality?.bars ?? "—"} svíček.</p>
+      <p>Kontextové řady: ${(m.context || []).join(", ") || "nedostupné"} (s časovým posunem).</p>
+      <dl class="indicator-grid">
+        <dt>RSI 14</dt><dd>${fmt(m.indicators?.rsi14)}</dd>
+        <dt>Momentum 20 seancí</dt><dd>${pct(m.indicators?.ret20)}</dd>
+        <dt>Volatilita 30 seancí</dt><dd>${pct(m.indicators?.vol30)}</dd>
+        <dt>Odchylka od SMA 10</dt><dd>${pct(m.indicators?.ma10)}</dd>
+      </dl>
+      ${m.quality?.warnings?.length ? `<p class="warn">${m.quality.warnings.join(" · ")}</p>` : ""}
+      ${m.quality?.missing_context?.length ? `<p class="warn">Chybějící kontext: ${m.quality.missing_context.join(", ")}</p>` : ""}
+    </details>
+  </article>`;
 }
 const tabs = document.createElement("div");
 tabs.className = "view-tabs";
@@ -106,21 +196,10 @@ function render() {
   const b = m.metrics;
   const q = m.quote;
   const verdict = assess(m);
-  const labels = {rsi14:"RSI 14",ret5:"Momentum 5 seancí",ret20:"Momentum 20 seancí",vol30:"Volatilita 30 seancí",ma10:"Odchylka od SMA 10",ma30:"Odchylka od SMA 30",ema20:"Vzdálenost od EMA 20",macd:"MACD vůči ceně",support:"Vzdálenost od minima 20 seancí",resistance:"Vzdálenost od maxima 20 seancí"};
-  detail.innerHTML = `<article class="panel"><h2>${markets[current]}</h2>
+  detail.innerHTML = scenarioMarkup(current, m, verdict) + `<article class="panel market-chart-panel"><h2>Vývoj ceny · ${markets[current]}</h2>
   <div class="stats"><div>Poslední kotace <strong>${fmt(q?.price ?? m.close)}</strong><br><small>${q?.timestamp ? dateTime.format(new Date(q.timestamp * 1000)) : m.date} · Yahoo Finance</small></div><div>Poslední uzavřená seance <strong>${pct(m.change)}</strong><br><small>${m.date} · závěr ${fmt(m.close)}</small></div></div>
   ${chart(m.prices)}
   <p>${m.prices[0][0]} až ${m.prices.at(-1)[0]} · denní závěry</p></article>
-  <article class="panel"><h2>Sedmidenní výhled</h2><p class="${verdict.label === "Sledovat" ? "" : "warn"}">${verdict.label}</p>
-  <div class="signals"><div class="${verdict.label === "Sledovat" ? "up" : ""}"><strong>${pct(m.up)}</strong>Růst</div><div class="${verdict.label === "Sledovat" ? "down" : ""}"><strong>${pct(1-m.up)}</strong>Pokles nebo stejná cena</div></div>
-  <p>Modelový odhad od závěru ${m.date}. Cíl připadá na ${m.target}, při zavřeném trhu se vyhodnotí první následující závěr.</p>
-  <meter class="signal-meter" min="0" max="1" value="${m.up}" aria-label="Pravděpodobnost růstu"></meter>
-  <dl class="agent-notes"><dt>Scout</dt><dd>${scout(m)}</dd><dt>Režim</dt><dd>${m.regime || "Neurčený"} (pravidlová diagnostika, ne další model)</dd><dt>Model</dt><dd>Kalibrovaný odhad růstu ${pct(m.up)}. Varianta: ${b.selected_model || "původní"}.</dd><dt>Skeptik</dt><dd>${verdict.reason}</dd></dl>
-  <details><summary>Vstupy a kvalita dat</summary><p>Odhad vychází z trendu, momenta, volatility a cenového rozpětí. Kontextové řady mají časový posun.</p><p>Kontext: ${(m.context || []).join(", ") || "nedostupný"}</p>
-  <p>Zdroj: ${m.quality?.source || "Yahoo Finance Chart"} · stáří poslední uzavřené seance ${m.quality?.age_days ?? "—"} dní · ${m.quality?.bars ?? "—"} svíček.</p>
-  ${m.quality?.warnings?.length ? `<p class="warn">${m.quality.warnings.join(" · ")}</p>` : ""}
-  ${m.quality?.missing_context?.length ? `<p class="warn">Chybějící kontext: ${m.quality.missing_context.join(", ")}</p>` : ""}
-  <dl>${Object.entries(labels).map(([k,v])=>`<dt>${v}</dt><dd>${k==="rsi14" ? fmt(m.indicators[k]) : pct(m.indicators[k])}</dd>`).join("")}</dl></details></article>
   <article class="panel" data-statistics><h2>Historické ověření</h2>
   <p>${b.test_start} až ${b.test_end} · ${b.test_count} nepřekrývajících se výhledů · výběr modelu proběhl na starších validačních datech</p>
   <dl><dt>Vybraný model</dt><dd>${b.selected_model ?? "původní"}</dd><dt>Accuracy</dt><dd>${pct(b.accuracy)}</dd><dt>Brier score</dt><dd>${fmt(b.brier)}</dd><dt>Log loss</dt><dd>${fmt(b.log_loss)}</dd><dt>Brier historické četnosti</dt><dd>${fmt(b.baseline_brier)}</dd><dt>Brier odhadu 50 %</dt><dd>${fmt(b.fair_coin_brier ?? .25)}</dd><dt>Brier momentum reference</dt><dd>${fmt(b.momentum_brier)}</dd><dt>Zlepšení proti nejlepší referenci</dt><dd>${fmt(b.improvement)}</dd><dt>95% bootstrap interval zlepšení</dt><dd>${b.improvement_ci ? b.improvement_ci.map(fmt).join(" až ") : "—"}</dd></dl>

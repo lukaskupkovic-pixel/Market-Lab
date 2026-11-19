@@ -19,6 +19,7 @@
 6. Režim trhu a původ/kvalita dat ve veřejném dashboardu.
 7. Offline regresní testy a samostatný CI workflow pro PR, bez dotyku produkčního refresh workflow.
 8. Izolovaný `?research=1` náhled nových metrik z jednorázového datového snapshotu; nejde o živé výsledky.
+9. Nové scénářové rozhraní s dvoutřídními skutečně kalibrovanými pravděpodobnostmi a otevřeně nemodelovanou neutrální třídou. Orientační 80% historické 7denní pásmo je pouze popis minulých pohybů, nikoli predikční interval.
 
 ## Otevřené limity a další výzkum
 

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from engine import (
-    analyze, candidate_probabilities, features, independent_indices, labels,
+    analyze, empirical_seven_day_range, features, independent_indices, labels,
     market_regime, validate_history,
 )
 
@@ -67,6 +67,13 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(np.isfinite(b["brier"]))
         self.assertIsInstance(market_regime(features(df).iloc[-1]), str)
         self.assertIn("probability", analysis["test"])
+
+    def test_historical_range_is_descriptive_and_ordered(self):
+        result = empirical_seven_day_range(candles())
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result["count"], 40)
+        self.assertEqual(result["kind"], "historical_not_forecast")
+        self.assertLess(result["low"], result["high"])
 
 
 if __name__ == "__main__":
