@@ -18,6 +18,7 @@
 5. Konzervativní zákaz kvalifikovaného signálu při neověřeném zlepšení, malém vzorku nebo chybějícím kontextu.
 6. Režim trhu a původ/kvalita dat ve veřejném dashboardu.
 7. Offline regresní testy a samostatný CI workflow pro PR, bez dotyku produkčního refresh workflow.
+8. Izolovaný `?research=1` náhled nových metrik z jednorázového datového snapshotu; nejde o živé výsledky.
 
 ## Otevřené limity a další výzkum
 

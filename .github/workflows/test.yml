@@ -22,3 +22,4 @@ jobs:
         env:
           OMP_NUM_THREADS: '2'
           OPENBLAS_NUM_THREADS: '2'
+      - run: node --check public/app.js

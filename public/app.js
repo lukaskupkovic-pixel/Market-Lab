@@ -5,6 +5,7 @@ const nav = document.querySelector("#markets");
 const detail = document.querySelector("#detail");
 let snapshot = {};
 let current = "BTC-USD";
+const researchPreview = new URLSearchParams(window.location.search).get("research") === "1";
 const number = new Intl.NumberFormat("cs-CZ", {maximumFractionDigits: 3});
 const dateTime = new Intl.DateTimeFormat("cs-CZ", {dateStyle:"medium",timeStyle:"short",timeZone:"Europe/Prague"});
 const pct = p => Number.isFinite(p) ? number.format(p * 100) + " %" : "—";
@@ -130,12 +131,14 @@ function render() {
   for (const panel of detail.children) panel.hidden = view === "stats" ? !panel.hasAttribute("data-statistics") : panel.hasAttribute("data-statistics");
 }
 async function load() {
-  status.textContent = "Načítám poslední zveřejněná data…";
+  status.textContent = researchPreview ? "Načítám výzkumný snapshot v2…" : "Načítám poslední zveřejněná data…";
   try {
-    const response = await fetch("./data.json", {cache:"no-store"});
+    const response = await fetch(researchPreview ? "./research-v2.json" : "./data.json", {cache:"no-store"});
     if (!response.ok) throw Error(response.status);
     snapshot = await response.json();
-    status.textContent = `Poslední zpracování ${dateTime.format(new Date(snapshot.updated))}`;
+    status.textContent = researchPreview ?
+      `VÝZKUMNÝ NÁHLED v2 · historický snapshot z ${dateTime.format(new Date(snapshot.updated))} · není živě aktualizován ani určen k obchodování` :
+      `Poslední zpracování ${dateTime.format(new Date(snapshot.updated))}`;
     if (Object.keys(snapshot.errors ?? {}).length) status.textContent += " · některé zdroje nejsou dostupné";
   } catch {
     status.textContent = "Zveřejněná data se nepodařilo načíst.";

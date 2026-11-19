@@ -44,6 +44,8 @@ node --check public/app.js
 
 Testovací GitHub Action běží na feature větvích a v PR, nespouští produkční aktualizaci ani Deploy Hook. Bez ověřeného zlepšení metrik nelze tvrdit, že v2 předpovídá trhy přesněji než původní verze. Podrobnosti auditu jsou v [MODEL_AUDIT.md](MODEL_AUDIT.md).
 
+Na náhledovém nasazení lze otevřít `?research=1`: stránka načte zvláštní statický soubor `research-v2.json` vzniklý při testovacím přepočtu. Je viditelně označen jako **neživý výzkumný snapshot** a neobsahuje produkční historii zveřejněných odhadů. Standardní URL dál načítá `data.json` a nic v produkci nemění.
+
 ## Produkce
 
 Vytvořte samostatný GitHub repozitář a importujte jej do samostatného Vercel projektu s frameworkem Other. Nastavení build výstupu je ve vercel.json. Ve Vercelu založte Deploy Hook pro hlavní větev a jeho URL uložte jako GitHub Actions secret VERCEL_DEPLOY_HOOK. Workflow potřebuje oprávnění zapsat snapshot do hlavní větve. Spustí se denně v 06:26 UTC nebo ručně. Git ukládá první výhled pro instrument, závěr a verzi modelu, opakovaný běh jej nepřepisuje. Po dosažení cíle se doplní výsledek. Částečný výpadek zachová poslední úspěšný odhad pro postižené trhy a workflow označí výpadek jako chybu. Při úplném výpadku zůstává dostupný poslední snapshot a GitHub Actions zaznamená chybu.
