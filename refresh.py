@@ -1,17 +1,30 @@
 """Build a public snapshot and append immutable forecasts."""
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from engine import ASSETS, analyze, fetch
+from engine import ASSETS, CONTEXT_BY_SYMBOL, analyze, fetch
+from monitor import degradation_report
+from external_data import COT_MARKETS, bls_upcoming, cot_snapshot
 
 logging.basicConfig(level=logging.INFO)
-OUTPUT = Path("public/data.json")
-VERSION = "daily-hgb-v2"
+OUTPUT = Path(os.environ.get("MARKET_LAB_OUTPUT", "public/data.json"))
+VERSION = "daily-ensemble-v4-regime"
+
+
+def configured_costs():
+    keys = ("roundtrip_spread_bps", "roundtrip_slippage_bps", "daily_financing_bps")
+    values = [os.getenv("MARKET_LAB_" + name.upper()) for name in keys]
+    if not any(value is not None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ValueError("Všechny tři parametry obchodních nákladů musí být nastaveny společně.")
+    return dict(zip(keys, map(float, values)))
 
 
 def refresh():
@@ -21,7 +34,26 @@ def refresh():
     results = {}
     series = {}
     errors = {}
-    symbols = [*ASSETS.values(), "DX-Y.NYB", "^TNX"]
+    supplementary = {}
+    events = []
+    feed_status = {"cftc": "disabled", "bls": "disabled"}
+    if os.environ.get("MARKET_LAB_OFFICIAL_FEEDS", "1") == "1":
+        feed_status = {"cftc": "ok", "bls": "ok"}
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            sources = {symbol: pool.submit(cot_snapshot, symbol) for symbol in COT_MARKETS}
+            calendar = pool.submit(bls_upcoming)
+            for symbol, request in sources.items():
+                try:
+                    supplementary[symbol] = request.result()
+                except Exception as error:
+                    logging.warning("CFTC %s unavailable: %s", symbol, error)
+                    feed_status["cftc"] = "partial_outage"
+            try:
+                events = calendar.result()
+            except Exception as error:
+                logging.warning("BLS calendar unavailable: %s", error)
+                feed_status["bls"] = "unavailable"
+    symbols = list(dict.fromkeys([*ASSETS.values(), "DX-Y.NYB", "^TNX"]))
     with ThreadPoolExecutor(max_workers=4) as pool:
         requests = {symbol: pool.submit(fetch, symbol) for symbol in symbols}
         for symbol, request in requests.items():
@@ -33,9 +65,11 @@ def refresh():
     for name, symbol in ASSETS.items():
         try:
             df = series[symbol]
-            context = {key: series[key]["Close"] for key in ("DX-Y.NYB", "^TNX", "^GSPC", "BTC-USD")
-                       if key != symbol and key in series}
-            model = analyze(df, context)
+            expected = CONTEXT_BY_SYMBOL.get(symbol, {})
+            context = {name: series[src]["Close"] for name, src in expected.items()
+                       if src != symbol and src in series}
+            missing_context = [name for name, src in expected.items() if src not in series]
+            model = analyze(df, context, costs=configured_costs())
             date = model["last_date"]
             close = model["last_close"]
             prior = float(df.Close.iloc[-2])
@@ -50,6 +84,7 @@ def refresh():
                 if not later.empty:
                     record["outcome"] = "up" if float(later.iloc[0]) > record["close"] else "flat_or_down"
                     record["outcome_date"] = str(later.index[0].date())
+            monitoring = degradation_report(history, symbol, VERSION)
             history.setdefault(key, {
                 "symbol": symbol, "date": date_text, "close": close, "up": probability,
                 "target": str((date + pd.Timedelta(days=7)).date()), "created": now,
@@ -61,6 +96,16 @@ def refresh():
                 "target": history[key]["target"], "metrics": model["metrics"],
                 "reliability": model["reliability"].to_dict("records"),
                 "indicators": model["indicators"].astype(object).where(model["indicators"].notna(), None).to_dict(),
+                "regime": model["regime"],
+                "regime_code": model["regime_code"],
+                "explanation": model["explanation"],
+                "reference_range": model["reference_range"],
+                "historical_scenarios": model["historical_scenarios"],
+                "cost_backtest": model["cost_backtest"],
+                "monitor": monitoring,
+                "cot": supplementary.get(symbol),
+                "quality": {**df.attrs.get("quality", {}), "missing_context": missing_context},
+                "model_version": VERSION,
                 "context": list(context),
                 "prices": [[str(d.date()), float(c)] for d, c in df.Close.tail(120).items()],
             }
@@ -68,7 +113,10 @@ def refresh():
             logging.exception("Analysis failed: %s", symbol)
             errors[symbol] = "Aktualizace analýzy selhala"
             results[symbol] = {**old.get("markets", {}).get(symbol, {}), "name": name, "stale": True}
-    payload = {"updated": now, "markets": results, "forecasts": history, "errors": errors}
+    research = OUTPUT.name.startswith("research-")
+    payload = {"updated": now, "markets": results, "forecasts": {} if research else history,
+               "research": research, "upcoming_us_events": events,
+               "supplementary_feeds": feed_status, "errors": errors}
     if any("up" in data and not data.get("stale") for data in results.values()):
         pending = OUTPUT.with_suffix(".tmp")
         pending.write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False))
