@@ -34,6 +34,7 @@ async function verify(query, filename) {
   assert.match(detail.innerHTML, /Nemodelováno/);
   assert.match(detail.innerHTML, /Historické 80% pásmo/);
   assert.match(detail.innerHTML, /Vysvětlení předpovědi/);
+  if (query.includes("research=1")) assert.match(detail.innerHTML, /Citlivost aktuálního modelu/);
   markets.children[3].onclick(); // SI futures: should show a silver proxy label.
   assert.match(detail.innerHTML, /XAG\/USD · Silver/);
   assert.match(detail.innerHTML, /není spot XAG\/USD/);
@@ -41,7 +42,7 @@ async function verify(query, filename) {
 }
 
 (async () => {
-  await verify("?research=1", "public/research-v2.json");
+  await verify("?research=1", "public/research-v3.json");
   await verify("", "public/data.json");
   console.log("UI rendering: research and default snapshot passed");
 })().catch(error => {console.error(error); process.exitCode = 1;});

@@ -84,6 +84,17 @@ summary { cursor: pointer; }
 .explanation-box h3 span { font-size: 1.5rem; color: #d2d2d7; }
 .explanation-box p { color: #e1e1e6; font-size: 1rem; line-height: 1.65; margin: 10px 0 0; }
 .explanation-box .explanation-disclaimer { font-size: .74rem; color: #a4a4ac; margin-top: 12px; }
+.explanation-box h4 { margin: 20px 0 7px; font-size: .85rem; color: #ceced4; }
+.factor-list { list-style: none; padding: 0; margin: 0; display: grid; }
+.factor-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #39393c; padding: 8px 0; font-size: .85rem; }
+.factor-list li strong { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.historical-scenario { border-top: 1px solid #29292d; margin-top: 25px; padding-top: 22px; }
+.historical-scenario h3 { font-size: 1rem; }
+.historical-scenario .scenario-grid { margin-top: 12px; }
+.historical-scenario .scenario-card { min-height: 85px; border-radius: 14px; gap: 4px; }
+.historical-scenario .scenario-card strong { font-size: clamp(1.2rem, 3vw, 1.75rem); }
+.historical-scenario p { font-size: .76rem; line-height: 1.5; }
+.event-risk { border-left: 3px solid #ef9b59; padding: 10px 13px; background: #241a14; border-radius: 8px; color: #e7c5af; font-size: .86rem; }
 .forecast-footnote { font-size: .78rem; line-height: 1.5; margin-top: 18px; }
 .source-details { border-top: 1px solid #2b2b30; padding-top: 16px; margin-top: 16px; font-size: .9rem; }
 .source-details summary { font-weight: 600; color: #d6d6db; }

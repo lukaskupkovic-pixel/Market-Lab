@@ -8,15 +8,18 @@ from engine import ASSETS
 
 class PreviewTests(unittest.TestCase):
     def test_research_preview_is_explicitly_static_and_complete(self):
-        payload = json.loads(Path("public/research-v2.json").read_text(encoding="utf-8"))
+        payload = json.loads(Path("public/research-v3.json").read_text(encoding="utf-8"))
         self.assertTrue(payload["research"])
         self.assertFalse(payload["forecasts"])  # No unpublished model predictions in the live report history.
         self.assertEqual(set(payload["markets"]), set(ASSETS.values()))
         for market in payload["markets"].values():
-            self.assertEqual(market["model_version"], "daily-ensemble-v3")
+            self.assertEqual(market["model_version"], "daily-ensemble-v4-regime")
             self.assertEqual(len(market["metrics"]["improvement_ci"]), 2)
             self.assertIn("quality", market)
             self.assertEqual(market["reference_range"]["kind"], "historical_not_forecast")
+            self.assertIn("monitor", market)
+            self.assertIn("cost_backtest", market)
+            self.assertIn("explanation", market)
 
 
 if __name__ == "__main__":

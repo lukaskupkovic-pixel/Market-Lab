@@ -11,6 +11,8 @@ const dateTime = new Intl.DateTimeFormat("cs-CZ", {dateStyle:"medium",timeStyle:
 const pct = p => Number.isFinite(p) ? number.format(p * 100) + " %" : "—";
 const fmt = p => Number.isFinite(p) ? number.format(p) : "—";
 const price = p => Number.isFinite(p) ? new Intl.NumberFormat("cs-CZ", {minimumFractionDigits:2, maximumFractionDigits:2}).format(p) : "—";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const factors = {ret1:"Denní změna",ret5:"Pětidenní momentum",ret20:"Dvacetidenní momentum",vol10:"Krátká volatilita",vol30:"Dlouhá volatilita",vol_ratio:"Nárůst volatility",downside_vol20:"Riziko poklesu",drawdown20:"Propad od maxima",ma10:"Průměr SMA 10",ma30:"Průměr SMA 30",range:"Rozsah svíčky",volume_z:"Objem",rsi14:"RSI 14",ema20:"EMA 20",macd:"MACD",support:"Vzdálenost od podpory",resistance:"Vzdálenost od odporu"};
 const marketHeadlines = {
   "BTC-USD":["BTC/USD · Bitcoin","Spotový trh · USD"],
   "ETH-USD":["ETH/USD · Ethereum","Spotový trh · USD"],
@@ -37,6 +39,7 @@ let view = "signals";
 function assess(m) {
   if (m?.up == null) return {label:"Nedostatek dat", reason:"Odhad není k dispozici."};
   if (m.stale) return {label:"Starší data", reason:"Poslední aktualizace trhu selhala."};
+  if (m.monitor?.blocks_signal) return {label:"Bez signálu", reason:`Živé publikované výhledy vykazují zhoršení (Brier ${fmt(m.monitor.recent_brier)}). Automatická pojistka signál pozastavila.`};
   if (m.quality?.missing_context?.length) return {label:"Bez signálu", reason:"Chybí některé z požadovaných kontextových řad: " + m.quality.missing_context.join(", ") + "."};
   const b = m.metrics;
   if (!b || typeof b.weak !== "boolean") return {label:"Nedostatek dat", reason:"Historické ověření chybí."};
@@ -84,6 +87,12 @@ function scenarioMarkup(symbol, m, verdict) {
   const rangeAvailable = Number.isFinite(range?.low) && Number.isFinite(range?.high);
   const rangeUnit = symbol.startsWith("^") ? "bodů" : "USD";
   const rangeValue = rangeAvailable ? `${price(range.low)}–${price(range.high)} ${rangeUnit}` : "Zatím nedostupné";
+  const scenarios = m.historical_scenarios;
+  const sensitivity = (m.explanation ?? []).filter(f => Number.isFinite(f.effect_pp)).map(f =>
+    `<li><span>${esc(factors[f.feature] || f.feature.replaceAll("_", " "))}</span><strong class="${f.effect_pp >= 0 ? "up" : "down"}">${f.effect_pp > 0 ? "+" : ""}${fmt(f.effect_pp)} p. b.</strong></li>`).join("");
+  const cot = m.cot;
+  const monitor = m.monitor;
+  const cost = m.cost_backtest;
   return `<article class="panel forecast-panel" aria-label="Sedmidenní pravděpodobnostní scénáře">
     <div class="forecast-heading">
       <div class="forecast-title">
@@ -112,13 +121,20 @@ function scenarioMarkup(symbol, m, verdict) {
     <div class="explanation-box">
       <h3><span aria-hidden="true">✧</span> Vysvětlení předpovědi</h3>
       <p>${explainForecast(m, verdict)}</p>
-      <p class="explanation-disclaimer">Jde o popis tržních ukazatelů, nikoli o prokázanou příčinu rozhodnutí statistického modelu.</p>
+      ${sensitivity ? `<h4>Citlivost aktuálního modelu</h4><ul class="factor-list">${sensitivity}</ul><p class="explanation-disclaimer">Rozdíl v procentních bodech, kdyby jediný vstup měl historický medián. Ostatní hodnoty jsou beze změny. Nejde o příčinné vysvětlení ani nezávisle ověřenou důležitost.</p>` : ""}
     </div>
+    ${scenarios ? `<div class="historical-scenario"><h3>Historické scénáře při podobném režimu</h3>
+      <div class="scenario-grid compact"><div class="scenario-card scenario-up"><span>Růst</span><strong>${pct(scenarios.up)}</strong></div><div class="scenario-card scenario-neutral"><span>Klid</span><strong>${pct(scenarios.neutral)}</strong></div><div class="scenario-card scenario-down"><span>Pokles</span><strong>${pct(scenarios.down)}</strong></div></div>
+      <p>Neutrální pásmo ±${fmt(scenarios.neutral_threshold_pct)} % · ${scenarios.count} nezávislých historických období za max. ${scenarios.lookback_years ?? "—"} let. <strong>Jde o četnosti, nikoli o kalibrované pravděpodobnosti budoucího vývoje.</strong></p></div>` : ""}
     <p class="forecast-footnote">Odhad od uzavření ${m.date} · cíl ${m.target} (první následující závěr při uzavřeném trhu). Pravděpodobnost není obchodní doporučení.</p>
     <details class="source-details"><summary>Model, vstupy a kvalita dat</summary>
       <dl class="agent-notes"><dt>Scout</dt><dd>${scout(m)}</dd><dt>Model</dt><dd>Varianta ${m.metrics.selected_model || "původní"} · odhad růstu ${pct(m.up)}</dd><dt>Skeptik</dt><dd>${verdict.reason}</dd></dl>
       <p>Zdroj: ${m.quality?.source || "Yahoo Finance Chart"} · stáří seance ${m.quality?.age_days ?? "—"} dní · ${m.quality?.bars ?? "—"} svíček.</p>
       <p>Kontextové řady: ${(m.context || []).join(", ") || "nedostupné"} (s časovým posunem).</p>
+      <p>Specialista na režimy: ${m.metrics.selected_model === "regime_specialist" ? "vybrán validačním testem" : "testován, nevybrán"}. Model používá jen ukončené svíčky.</p>
+      <p>Monitoring zveřejněných výhledů: ${monitor?.status === "degraded" ? "zhoršení / pozastavený signál" : monitor?.status === "watch" ? `sledováno · ${monitor.count} nepřekrývajících se výhledů · Brier ${fmt(monitor.recent_brier)}` : `zatím málo dokončených výhledů (${monitor?.count ?? 0}/${monitor?.minimum ?? 20})`}.</p>
+      <p>Simulace nákladů: ${cost?.status === "evaluated" ? `${cost.trades} obchodů · průměrný čistý výnos ${pct(cost.average_net_return)} · bez páky, po zadaném spreadu, skluzu a financování` : "nezadané ověřené brokerové náklady; výsledek po nákladech nelze tvrdit"}.</p>
+      ${cot ? `<p>CFTC COT · ${esc(cot.report_date)}: net pozice správců peněz ${fmt(cot.managed_money_net)} kontraktů (${pct(cot.net_share_of_oi)} open interest). Pouze kontext, není vstupem modelu; není ověřena vintage k datu zveřejnění.</p>` : ""}
       <dl class="indicator-grid">
         <dt>RSI 14</dt><dd>${fmt(m.indicators?.rsi14)}</dd>
         <dt>Momentum 20 seancí</dt><dd>${pct(m.indicators?.ret20)}</dd>
@@ -197,6 +213,7 @@ function render() {
   const q = m.quote;
   const verdict = assess(m);
   detail.innerHTML = scenarioMarkup(current, m, verdict) + `<article class="panel market-chart-panel"><h2>Vývoj ceny · ${markets[current]}</h2>
+  ${snapshot.upcoming_us_events?.length ? `<p class="event-risk"><strong>Makro kalendář · USA:</strong> ${snapshot.upcoming_us_events.slice(0,3).map(event => `${esc(event.name)} (${dateTime.format(new Date(event.scheduled_utc))})`).join(" · ")}. Pouze plánované události, ne predikční vstupy.</p>` : snapshot.supplementary_feeds?.bls === "unavailable" ? `<p class="warn">Oficiální kalendář BLS je dočasně nedostupný; neznamená to, že nejsou naplánované žádné události.</p>` : ""}
   <div class="stats"><div>Poslední kotace <strong>${fmt(q?.price ?? m.close)}</strong><br><small>${q?.timestamp ? dateTime.format(new Date(q.timestamp * 1000)) : m.date} · Yahoo Finance</small></div><div>Poslední uzavřená seance <strong>${pct(m.change)}</strong><br><small>${m.date} · závěr ${fmt(m.close)}</small></div></div>
   ${chart(m.prices)}
   <p>${m.prices[0][0]} až ${m.prices.at(-1)[0]} · denní závěry</p></article>
@@ -212,11 +229,11 @@ function render() {
 async function load() {
   status.textContent = researchPreview ? "Načítám výzkumný snapshot v2…" : "Načítám poslední zveřejněná data…";
   try {
-    const response = await fetch(researchPreview ? "./research-v2.json" : "./data.json", {cache:"no-store"});
+    const response = await fetch(researchPreview ? "./research-v3.json" : "./data.json", {cache:"no-store"});
     if (!response.ok) throw Error(response.status);
     snapshot = await response.json();
     status.textContent = researchPreview ?
-      `VÝZKUMNÝ NÁHLED v2 · historický snapshot z ${dateTime.format(new Date(snapshot.updated))} · není živě aktualizován ani určen k obchodování` :
+      `VÝZKUMNÝ NÁHLED v3 · historický snapshot z ${dateTime.format(new Date(snapshot.updated))} · není živě aktualizován ani určen k obchodování` :
       `Poslední zpracování ${dateTime.format(new Date(snapshot.updated))}`;
     if (Object.keys(snapshot.errors ?? {}).length) status.textContent += " · některé zdroje nejsou dostupné";
   } catch {

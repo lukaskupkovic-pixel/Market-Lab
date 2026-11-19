@@ -58,15 +58,25 @@ class EngineTests(unittest.TestCase):
         df = candles()
         analysis = analyze(df)
         b = analysis["metrics"]
-        self.assertIn(b["selected_model"], ["linear", "boosted", "blend"])
+        self.assertIn(b["selected_model"], ["linear", "boosted", "blend", "regime_specialist"])
         self.assertGreater(b["test_count"], 10)
         self.assertTrue(0 <= analysis["probability"] <= 1)
-        self.assertEqual(set(b["validation_brier"]), {"linear", "boosted", "blend"})
-        self.assertEqual(set(b["test_candidates_brier"]), {"linear", "boosted", "blend"})
+        self.assertEqual(set(b["validation_brier"]), {"linear", "boosted", "blend", "regime_specialist"})
+        self.assertEqual(set(b["test_candidates_brier"]), {"linear", "boosted", "blend", "regime_specialist"})
+        self.assertIsInstance(analysis["explanation"], list)
+        self.assertEqual(analysis["cost_backtest"]["status"], "not_configured")
+        self.assertIn(analysis["regime_code"], [0, 1, 2, 3])
         self.assertEqual(len(b["improvement_ci"]), 2)
         self.assertTrue(np.isfinite(b["brier"]))
         self.assertIsInstance(market_regime(features(df).iloc[-1]), str)
         self.assertIn("probability", analysis["test"])
+
+    def test_user_supplied_costs_apply_only_on_final_period(self):
+        df = candles()
+        result = analyze(df, costs={"roundtrip_spread_bps": 20.,
+                                    "roundtrip_slippage_bps": 10., "daily_financing_bps": 2.})
+        self.assertEqual(result["cost_backtest"]["status"], "evaluated")
+        self.assertGreaterEqual(result["cost_backtest"]["trades"], 0)
 
     def test_historical_range_is_descriptive_and_ordered(self):
         result = empirical_seven_day_range(candles())

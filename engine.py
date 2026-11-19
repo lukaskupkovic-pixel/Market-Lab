@@ -151,14 +151,64 @@ def fit_candidates(X, y):
     )
     linear.fit(X, y.astype(int))
     boosted.fit(X, y.astype(int))
-    return {"linear": linear, "boosted": boosted}
+    # A specialist is allowed to learn only from the *same* regime known at
+    # the observation time. When history is thin it falls back to the linear
+    # model; its incremental value must still pass temporal validation.
+    regime = X["regime_code"].to_numpy()
+    specialists = {}
+    for code in range(4):
+        subset = regime == code
+        classes, counts = np.unique(y.to_numpy()[subset], return_counts=True)
+        if subset.sum() < 100 or len(classes) != 2 or counts.min() < 20:
+            continue
+        specialized = make_pipeline(
+            SimpleImputer(strategy="median"), StandardScaler(),
+            LogisticRegression(C=0.2, max_iter=400, random_state=42),
+        )
+        specialized.fit(X.loc[subset], y.loc[subset].astype(int))
+        specialists[code] = specialized
+    return {"linear": linear, "boosted": boosted, "specialists": specialists}
 
 
 def candidate_probabilities(models, X):
     linear = models["linear"].predict_proba(X)[:, 1]
     boosted = models["boosted"].predict_proba(X)[:, 1]
     # The blend weight is fixed ahead of validation, never fitted on the test set.
-    return {"linear": linear, "boosted": boosted, "blend": 0.5 * (linear + boosted)}
+    specialized = linear.copy()
+    for code, model in models["specialists"].items():
+        matches = X["regime_code"].to_numpy() == code
+        if matches.any():
+            specialized[matches] = model.predict_proba(X.loc[matches])[:, 1]
+    return {"linear": linear, "boosted": boosted, "blend": 0.5 * (linear + boosted),
+            "regime_specialist": specialized}
+
+
+def regime_codes(X):
+    """Ex-ante four-state classifier based solely on lagged/present candles."""
+    denominator = X["vol30"].replace(0, np.nan) * np.sqrt(20)
+    z = (X["ret20"] / denominator).replace([np.inf, -np.inf], np.nan).fillna(0)
+    elevated = X["vol_ratio"].fillna(1) > 1.3
+    # 0: sideways, 1: up, 2: down, 3: high volatility
+    return pd.Series(np.select([elevated, z > 1, z < -1], [3, 1, 2], default=0), index=X.index)
+
+
+def explain_local(model, calibrator, columns, current, historical, selected):
+    """Local model sensitivity, NOT causal attribution or feature importance."""
+    baseline_raw = candidate_probabilities(model, current)[selected]
+    baseline = float(calibrator.predict_proba(log_odds(baseline_raw))[0, 1])
+    impacts = []
+    for name in columns:
+        if name == "regime_code" or not np.isfinite(current.iloc[0][name]):
+            continue
+        median = historical[name].median()
+        if not np.isfinite(median):
+            continue
+        counterfactual = current.copy()
+        counterfactual.loc[:, name] = median
+        raw = candidate_probabilities(model, counterfactual)[selected]
+        alternative = float(calibrator.predict_proba(log_odds(raw))[0, 1])
+        impacts.append({"feature": name, "effect_pp": round(100 * (baseline - alternative), 2)})
+    return sorted(impacts, key=lambda item: abs(item["effect_pp"]), reverse=True)[:4]
 
 
 def log_odds(prob):
@@ -222,7 +272,74 @@ def empirical_seven_day_range(df):
             "count": len(returns), "percentile": 80, "kind": "historical_not_forecast"}
 
 
-def analyze(df, context=None):
+def historical_regime_scenarios(df, X):
+    """Observed conditional frequencies; NOT calibrated three-class forecasts."""
+    _, ends = labels(df)
+    current_regime = int(X.regime_code.iloc[-1])
+    current_vol = float(X.vol30.iloc[-1])
+    if not np.isfinite(current_vol):
+        return None
+    # A neutral zone proportional to current market volatility.
+    threshold = max(.005, .4 * current_vol * np.sqrt(5))
+    # Prefer recent history but expand if a regime was rare recently; never
+    # publish noisy pseudo-precise proportions from tiny samples.
+    dates, independent, lookback = pd.DatetimeIndex([]), np.array([], dtype=int), 3
+    for years in (3, 5, 10):
+        start = df.index[-1] - pd.Timedelta(days=365 * years)
+        dates = df.index[(df.index >= start) & (X.regime_code == current_regime)]
+        independent = independent_indices(dates, ends, 0, len(dates), known_before=df.index[-1])
+        lookback = years
+        if len(independent) >= 30:
+            break
+    changes = []
+    for i in independent:
+        date = dates[i]
+        reference = float(df.at[date, "Close"])
+        if reference > 0:
+            changes.append((float(df.at[ends.at[date], "Close"]) - reference) / reference)
+    if len(changes) < 30:
+        return None
+    changes = np.asarray(changes)
+    return {"up": round(float(np.mean(changes > threshold)), 4),
+            "neutral": round(float(np.mean(np.abs(changes) <= threshold)), 4),
+            "down": round(float(np.mean(changes < -threshold)), 4),
+            "neutral_threshold_pct": round(100 * threshold, 2), "count": len(changes),
+            "lookback_years": lookback,
+            "kind": "historical_regime_frequencies_not_forecast"}
+
+
+def trading_cost_backtest(test, df, ends, costs):
+    """Optional, explicit no-leverage unit-notional simulation on held-out dates.
+
+    Requires user-supplied broker-specific all-in spread, slippage and daily
+    financing. A direction is attempted only above 55% / below 45%.
+    """
+    if costs is None:
+        return {"status": "not_configured", "reason": "Chybí doložené náklady konkrétního instrumentu."}
+    keys = {"roundtrip_spread_bps", "roundtrip_slippage_bps", "daily_financing_bps"}
+    if set(costs) != keys or any(not np.isfinite(value) or value < 0 for value in costs.values()):
+        raise ValueError("Trading cost inputs must contain three finite non-negative bps values")
+    outcomes = []
+    for date, probability in zip(test.date, test.probability):
+        side = 1 if probability >= .55 else -1 if probability <= .45 else 0
+        if not side:
+            continue
+        end = ends.at[date]
+        start_price = float(df.at[date, "Close"])
+        end_price = float(df.at[end, "Close"])
+        if start_price <= 0:
+            continue
+        duration = (end - date).days
+        cost = (costs["roundtrip_spread_bps"] + costs["roundtrip_slippage_bps"] +
+                duration * costs["daily_financing_bps"]) / 10000
+        outcomes.append(side * (end_price - start_price) / start_price - cost)
+    return {"status": "evaluated", "trades": len(outcomes),
+            "average_net_return": round(float(np.mean(outcomes)), 6) if outcomes else None,
+            "win_rate": round(float(np.mean(np.asarray(outcomes) > 0)), 4) if outcomes else None,
+            "cost_inputs_bps": costs, "note": "Bez páky, komisí, swapových rozdílů a intradenní exekuce; pouze simulační proxy."}
+
+
+def analyze(df, context=None, costs=None):
     X = features(df)
     for name, series in (context or {}).items():
         # One observation lag on the union calendar: no concurrent external close.
@@ -230,6 +347,7 @@ def analyze(df, context=None):
         change = prior.diff() / prior.shift(1).abs().replace(0, np.nan)
         X[f"{name}_change"] = change
         X[f"{name}_corr"] = X["ret1"].rolling(30, min_periods=15).corr(change)
+    X["regime_code"] = regime_codes(X)
     columns = list(X.columns)
     X = X.replace([np.inf, -np.inf], np.nan)
     y, label_end = labels(df)
@@ -242,7 +360,7 @@ def analyze(df, context=None):
     n = len(dataset)
     start = max(350, int(n * 0.5))
     step = 60
-    predictions = {"linear": [], "boosted": [], "blend": []}
+    predictions = {"linear": [], "boosted": [], "blend": [], "regime_specialist": []}
     actual, timestamps = [], []
     for i in range(start, n, step):
         train_dates = dataset.index[:i]
@@ -340,8 +458,11 @@ def analyze(df, context=None):
     current_calibrator = LogisticRegression(C=1.0, random_state=42)
     current_calibrator.fit(log_odds(raw[selected][mature]), truth[mature])
     probability = float(current_calibrator.predict_proba(log_odds(latest_raw))[0, 1])
+    explanation = explain_local(latest_models, current_calibrator, columns,
+                                X.loc[[last_date], columns], dataset.loc[train_idx, columns], selected)
 
     test = pd.DataFrame({"date": test_dates, "actual": test_truth, "probability": p_test})
+    costs_report = trading_cost_backtest(test, df, label_end, costs)
     test["bucket"] = pd.cut(test.probability, bins=np.linspace(0, 1, 6), include_lowest=True)
     reliability = test.groupby("bucket", observed=False).agg(
         predicted=("probability", "mean"), observed=("actual", "mean"),
@@ -353,5 +474,9 @@ def analyze(df, context=None):
         "last_close": float(df.loc[last_date, "Close"]),
         "history": df, "indicators": indicator,
         "regime": market_regime(indicator),
+        "regime_code": int(X.at[last_date, "regime_code"]),
+        "explanation": explanation,
         "reference_range": empirical_seven_day_range(df),
+        "historical_scenarios": historical_regime_scenarios(df, X),
+        "cost_backtest": costs_report,
     }
